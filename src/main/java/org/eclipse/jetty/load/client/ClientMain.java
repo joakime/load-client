@@ -4,7 +4,9 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
+import java.util.Random;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import org.HdrHistogram.Histogram;
@@ -20,11 +22,21 @@ public class ClientMain
 {
     private static final Logger LOG = LoggerFactory.getLogger(ClientMain.class);
 
-    public static void main(String[] args)
+    public static void main(String[] args) throws ExecutionException, InterruptedException
     {
         ReportListener listener = new ReportListener();
 
-        Resource resource = new Resource("/slow/?duration=60");
+        Resource resource = new Resource()
+        {
+            private Random random = new Random();
+
+            @Override
+            public String getPath()
+            {
+                System.out.print('.');
+                return "/slow/blocking/?duration=" + (200 + random.nextInt(500));
+            }
+        };
 
         LoadGenerator generator = LoadGenerator.builder()
             .scheme("http")
@@ -32,41 +44,41 @@ public class ClientMain
             .port(9999)
             .resource(resource)
             .httpClientTransportBuilder(new HTTP1ClientTransportBuilder().selectors(1))
-            .threads(1)
-            .usersPerThread(10)
-            .channelsPerUser(6)
-            .warmupIterationsPerThread(10)
-            .iterationsPerThread(100)
-            .runFor(2, TimeUnit.MINUTES)
+            .threads(24)
+            .usersPerThread(24)
+            .iterationsPerThread(200)
+            .resourceRate(0)
+            // .channelsPerUser(6)
+            // .warmupIterationsPerThread(10)
+            // .runFor(1, TimeUnit.MINUTES)
+            .listener(listener)
             .resourceListener(listener)
             .build();
 
-        run(generator);
+        generator.addBean(listener);
 
-        ReportListener.Report report = listener.whenComplete().join();
-        displayReport(generator.getConfig(), report);
-    }
-
-    private static void run(LoadGenerator loadGenerator)
-    {
-        LOG.info("load generator config: {}", loadGenerator.getConfig());
+        LOG.info("load generator config: {}", generator.getConfig());
         LOG.info("load generation begin");
-        CompletableFuture<Void> cf = loadGenerator.begin();
+
+        CompletableFuture<Void> cf = generator.begin();
         cf.whenComplete((x, f) ->
         {
             if (f == null)
             {
                 LOG.info("load generation complete");
+                ReportListener.Report report = listener.whenComplete().join();
+                displayReport(generator.getConfig(), report);
             }
             else
             {
                 LOG.info("load generation failure", f);
             }
-        }).join();
+        });
     }
 
     private static void displayReport(LoadGenerator.Config config, ReportListener.Report report)
     {
+        LOG.info("Display Report: {}", report);
         Histogram responseTimes = report.getResponseTimeHistogram();
         HistogramSnapshot snapshot = new HistogramSnapshot(responseTimes, 20, "response times", "ms", TimeUnit.NANOSECONDS::toMillis);
         DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z").withZone(ZoneId.systemDefault());
